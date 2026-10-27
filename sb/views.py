@@ -5,7 +5,7 @@ import random
 import re
 from urllib.parse import quote, unquote, urlsplit
 
-from . import awards, db, live, media, security, settings
+from . import awards, db, live, media, notify, security, settings
 from .db import PREFIX_MAX, conn, new_id, now, tx
 from .tpl import _bar_cache as community_bar_cache
 from .tpl import COLOR_RX, DARK_BG, FORMATTING_HELP, contrast, for_dark
@@ -99,7 +99,7 @@ def award_link(req, target_id, author_id):
     """"give award" for logged-in users, on anything that isn't their own."""
     if not req.user or not author_id or req.user["id"] == author_id:
         return ""
-    return '<li><a class="giveaward" href="/award/%s?next=%s">give award</a></li>' % (e(target_id), e(quote(req.full_path)))
+    return '<li><a href="/award/%s?next=%s">give award</a></li>' % (e(target_id), e(quote(req.full_path)))
 
 
 def post_row(req, p, rank=None, show_comm=True, awarded=None):
@@ -509,7 +509,10 @@ def submit_form(req, kind, cur="", err="", f=None):
     if not comms:
         return '<p class="empty">There are no communities yet. <a href="/communities/new">Create one</a> first.</p>'
     cur = f.get("community", cur)
-    opts = "".join('<option value="%s"%s>%s</option>' % (
+    # No default: the community is only filled in when the user came from one (?r=name).
+    picked = any(c["name"].lower() == cur.lower() for c in comms)
+    opts = '<option value=""%s>choose a community</option>' % ("" if picked else " selected") + "".join(
+        '<option value="%s"%s>%s</option>' % (
         e(c["name"]), " selected" if c["name"].lower() == cur.lower() else "", e(cname(c["name"], c["prefix"])))
         for c in comms)
     tabs = "".join('<li%s><a href="/submit?kind=%s&amp;r=%s">%s</a></li>' % (
@@ -531,7 +534,7 @@ def submit_form(req, kind, cur="", err="", f=None):
 <form class="formtabs" method="post" action="/submit" enctype="multipart/form-data">{csrf(req)}{field_error(err)}
 <input type="hidden" name="kind" value="{kind}">
 {fields}
-<div class="roundfield"><label>choose a community <span class="req">*</span></label><select name="community">{opts}</select></div>
+<div class="roundfield"><label>choose a community <span class="req">*</span></label><select name="community" required>{opts}</select></div>
 <button class="btn">submit</button> <span class="hint">ctrl+enter to send</span></form>"""
 
 
@@ -583,6 +586,7 @@ def submit_post(req):
         cx.execute("INSERT INTO posts VALUES(?,?,?,?,?,?,?,?,1,?,0,0,?)",
                    (pid, c["id"], req.user["id"], kind, title, body, image_id, thumb_id, db.hot(1, t), t))
         cx.execute("INSERT INTO votes VALUES(?,?,1)", (req.user["id"], pid))
+        notify.mentions(cx, title + "\n" + body, req.user["id"], pid, pid)
         live.notify(cx, pid, t)
     return redirect("/p/" + pid)
 
@@ -673,13 +677,18 @@ def comment_post(req, pid):
         raise HTTPError(403, "That post was deleted.")
     if not body or len(body) > 10000:
         raise HTTPError(400, "Comments must be 1-10000 characters.")
-    if parent and not conn().execute("SELECT 1 FROM comments WHERE id=? AND post_id=?", (parent, pid)).fetchone():
-        raise HTTPError(400, "The comment you replied to doesn't exist.")
-    cid = new_id()
+    if parent:
+        replied = conn().execute("SELECT author_id FROM comments WHERE id=? AND post_id=?", (parent, pid)).fetchone()
+        if not replied:
+            raise HTTPError(400, "The comment you replied to doesn't exist.")
+    to, kind = (replied["author_id"], "comment_reply") if parent else (p["author_id"], "post_reply")
+    cid, uid = new_id(), req.user["id"]
     with tx() as cx:
-        cx.execute("INSERT INTO comments VALUES(?,?,?,?,?,1,0,?)", (cid, pid, parent, req.user["id"], body, now()))
-        cx.execute("INSERT INTO votes VALUES(?,?,1)", (req.user["id"], cid))
+        cx.execute("INSERT INTO comments VALUES(?,?,?,?,?,1,0,?)", (cid, pid, parent, uid, body, now()))
+        cx.execute("INSERT INTO votes VALUES(?,?,1)", (uid, cid))
         cx.execute("UPDATE posts SET comment_count=comment_count+1 WHERE id=?", (pid,))
+        notify.add(cx, to, kind, uid, cid, pid)
+        notify.mentions(cx, body, uid, cid, pid, skip={to})  # a reply already told them
     return redirect("/p/%s#c_%s" % (pid, cid))
 
 
@@ -1159,9 +1168,84 @@ def recover_post(req):
     return phrase_page(req, u, new, "password reset")
 
 
+# --- notifications ---------------------------------------------------------------------------
+
+NOTIFICATION_SELECT = (
+    "SELECT n.*, a.name AS actor, a.prefix AS aprefix, a.is_admin AS aadmin, p.title, p.body AS pbody, "
+    "p.deleted AS pdeleted, c.id AS cid, c.body AS cbody, c.deleted AS cdeleted FROM notifications n "
+    "LEFT JOIN users a ON a.id=n.actor_id JOIN posts p ON p.id=n.post_id LEFT JOIN comments c ON c.id=n.target_id ")
+
+
+def notification_row(n):
+    on_comment = n["cid"] is not None
+    who = user_link(n["actor"], n["aprefix"], n["aadmin"])
+    if n["kind"] == "award" and n["detail"] in awards.AWARDS:
+        says = "%s gave you %s on" % (who, e(awards.AWARDS[n["detail"]][0]))
+        what = awards.icon(n["detail"], 32)
+    else:
+        says = "%s %s" % (who, e(notify.KINDS.get(n["kind"], ("", "notified you about"))[1]))
+        text = n["cbody"] if on_comment else n["pbody"]
+        what = ('<p class="gone">[deleted]</p>' if (n["cdeleted"] if on_comment else n["pdeleted"])
+                else "<p>%s</p>" % e(text if len(text) <= 300 else text[:300] + "...") if text else "")
+    ptitle = "[deleted]" if n["pdeleted"] else e(n["title"])
+    href = "/p/%s" % n["post_id"] + ("#c_%s" % n["cid"] if on_comment else "")
+    return f"""<div class="notification{'' if n['read'] else ' unread'}" id="n_{e(n['id'])}" data-t="{n['created']}">
+<p class="ntitle">{says} <a href="/p/{e(n['post_id'])}">{ptitle}</a> <time>{ago(n['created'])}</time></p>
+{'<div class="nbody">%s</div>' % what if what else ''}
+<ul class="buttons"><li><a href="{e(href)}">{'context' if on_comment else 'view post'}</a></li></ul></div>"""
+
+
+@route("GET", r"/notifications")
+def notifications_page(req):
+    if not req.user:
+        return login_redirect(req)
+    pg, uid = page_num(req), req.user["id"]
+    rows = conn().execute(NOTIFICATION_SELECT + "WHERE n.user_id=? ORDER BY n.created DESC, n.id DESC LIMIT ? OFFSET ?",
+                          (uid, PER_PAGE + 1, (pg - 1) * PER_PAGE)).fetchall()
+    # Seen now: the rows above still show which were new, and the header count drops to 0.
+    conn().execute("UPDATE notifications SET read=1 WHERE user_id=? AND read=0", (uid,))
+    req.user["unread"] = 0
+    items = "\n".join(notification_row(n) for n in rows[:PER_PAGE])
+    # Page 1 picks up new notifications by itself (app.js), from this timestamp on.
+    live = ' data-since="%d"' % (rows[0]["created"] if rows else now()) if pg == 1 else ""
+    body = f"""<h2 class="pagetitle">notifications</h2>
+<p class="hint">New ones show up here without reloading. Choose what you're notified about in <a href="/settings#notifications">preferences</a>.</p>
+<div class="notifications"{live}>{items or '<p class="empty">Nothing yet. Replies, mentions and awards will show up here.</p>'}</div>
+{pager(pg, len(rows) > PER_PAGE)}"""
+    return page(req, "notifications", body)
+
+
+@route("GET", r"/notifications/count")
+def notifications_count(req):
+    """Polled by every page (app.js) to keep the header's unread count current."""
+    if not req.user:
+        return json_response({"login": True})
+    resp = json_response({"unread": req.user["unread"], "poll": notify.POLL_SECONDS})
+    resp.headers.append(("Cache-Control", "no-store"))
+    return resp
+
+
+@route("GET", r"/notifications/new")
+def notifications_new(req):
+    """Rows created since ?since= for an open notifications page, which counts them as read."""
+    if not req.user:
+        raise HTTPError(403, "Log in first.")
+    try:
+        since = int(req.query.get("since", ""))
+    except ValueError:
+        raise HTTPError(400, "Bad timestamp.")
+    rows = conn().execute(NOTIFICATION_SELECT + "WHERE n.user_id=? AND n.created>=? ORDER BY n.created DESC, n.id DESC LIMIT 50",
+                          (req.user["id"], since)).fetchall()
+    if rows:
+        conn().execute("UPDATE notifications SET read=1 WHERE id = ANY(?)", ([n["id"] for n in rows],))
+    resp = Response("\n".join(notification_row(n) for n in rows))
+    resp.headers.append(("Cache-Control", "no-store"))
+    return resp
+
+
 # --- settings ------------------------------------------------------------------------------
 
-MESSAGES = {"profile": "Profile saved.", "prefs": "Preferences saved.", "avatar": "Avatar updated.", "password": "Password changed.",
+MESSAGES = {"profile": "Profile saved.", "prefs": "Preferences saved.", "notifications": "Notification preferences saved.", "avatar": "Avatar updated.", "password": "Password changed.",
             "badpw": "Current password is wrong.", "badimg": "That isn't a supported image, or it's over 8 MB.",
             "noavatars": "No default avatars are available.", "mismatch": "New passwords don't match or are under 8 characters."}
 
@@ -1175,6 +1259,9 @@ def settings_page(req, err=""):
     prefix_field = "" if not settings.flag("custom_user_prefix") else f"""<div class="roundfield"><label>prefix</label>
 <input name="prefix" value="{e(u['prefix'])}" maxlength="{PREFIX_MAX}" class="short" required>
 <span class="hint">shown as <b>prefix</b>/{e(u['name'])}, 1-{PREFIX_MAX} letters, numbers or underscores</span></div>"""
+    off = u["notify_off"].split(",")
+    notify_boxes = "".join('<label class="check"><input type="checkbox" name="notify_%s" value="1"%s> %s</label>'
+                           % (k, "" if k in off else " checked", e(label)) for k, (label, _) in notify.KINDS.items())
     note = '<div class="%s">%s</div>' % ("error" if req.query.get("msg") in ("badpw", "badimg", "noavatars", "mismatch") else "notice", e(msg)) if msg else ""
     body = f"""<h2 class="pagetitle">preferences</h2>{note}{field_error(err)}
 <form class="formtabs" method="post" action="/settings/profile">{csrf(req)}<h3>profile</h3>
@@ -1198,6 +1285,11 @@ show new posts as they're posted when the front page is sorted by <b>new</b></la
 <span class="hint">at the top of the page new posts appear right away; further down, a "new posts" button shows up instead</span></div>
 <button class="btn">save</button></form>
 
+<form class="formtabs" id="notifications" method="post" action="/settings/notifications">{csrf(req)}<h3>notifications</h3>
+<fieldset class="roundfield"><legend>notify me about</legend>{notify_boxes}</fieldset>
+<span class="hint">they're listed at <a href="/notifications">notifications</a>; the count in the header updates by itself</span><br>
+<button class="btn">save</button></form>
+
 <form class="formtabs" method="post" action="/settings/password">{csrf(req)}<h3>change password</h3>
 <div class="roundfield"><label>current password</label><input type="password" name="current" required autocomplete="current-password"></div>
 <div class="roundfield"><label>new password</label><input type="password" name="password" required minlength="8" maxlength="256" autocomplete="new-password"></div>
@@ -1218,6 +1310,15 @@ def settings_prefs(req):
     conn().execute("UPDATE users SET live_updates=?, dark_mode=? WHERE id=?",
                    (int(req.get("live_updates") == "1"), int(req.get("dark_mode") == "1"), req.user["id"]))
     return redirect("/settings?msg=prefs")
+
+
+@route("POST", r"/settings/notifications")
+def settings_notifications(req):
+    if not req.user:
+        return login_redirect(req)
+    off = ",".join(k for k in notify.KINDS if req.get("notify_" + k) != "1")
+    conn().execute("UPDATE users SET notify_off=? WHERE id=?", (off, req.user["id"]))
+    return redirect("/settings?msg=notifications")
 
 
 @route("POST", r"/settings/profile")

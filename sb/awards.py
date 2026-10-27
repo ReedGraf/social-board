@@ -9,7 +9,7 @@ the sum of vote scores and goes up and down):
   - giving an award costs its price; some awards also pay the recipient."""
 from html import escape as e
 
-from . import db
+from . import db, notify
 from .web import static_url
 
 STARTING_BALANCE = 100  # also the column default in db.SCHEMA
@@ -85,4 +85,5 @@ def give(giver_id, award, target_id):
             cx.execute("UPDATE users SET award_karma = award_karma + ? WHERE id=?", (bonus, t["author_id"]))
         cx.execute("INSERT INTO awards_given VALUES(?,?,?,?,?,?)",
                    (db.new_id(), award, giver_id, t["author_id"], target_id, db.now()))
+        notify.add(cx, t["author_id"], "award", giver_id, target_id, t["post_id"], award)
     return t["post_id"]

@@ -5,7 +5,7 @@ from functools import lru_cache
 import secrets
 import time
 
-from . import awards, db, settings
+from . import awards, db, notify, settings
 from .web import CONF, static_url
 
 e = html.escape
@@ -309,6 +309,13 @@ def karma(user_id):
     return r[0], r[1], r[2] or 0
 
 
+def inbox_link(unread):
+    """Header link to /notifications. app.js polls the count and updates it (and the tab title) in place."""
+    return ('<a id="inbox" class="inbox%s" href="/notifications" data-poll="%d" aria-label="notifications, %d unread">'
+            'notifications<b class="count"%s>%d</b></a>') % (
+                " has-unread" if unread else "", notify.POLL_SECONDS, unread, "" if unread else " hidden", unread)
+
+
 def page(req, title, body, *, side="", pagename="", pagehref="", tabs=None, status=200):
     from .web import Response
     u = req.user
@@ -317,12 +324,13 @@ def page(req, title, body, *, side="", pagename="", pagehref="", tabs=None, stat
         total = sum(karma(u["id"]))
         right = ('<a%s href="%s">%s</a> (<b title="karma">%d</b>)'
                  ' <span class="awardbal" title="award karma: spend it on awards">%s<b>%d</b></span>'
+                 ' <span class="sep">|</span> %s'
                  '%s <span class="sep">|</span> <a href="/settings">preferences</a>'
                  ' <span class="sep">|</span> <form class="inline" method="post" action="/logout">%s'
                  '<button class="linkbtn">logout</button></form>') % (
                      ' class="admin"' if u["is_admin"] else "", e(user_url(u["name"], u["prefix"])), e(u["name"]), total,
                      awards.icon("gold", 12).replace('title="Gold"', 'title="award karma"').replace('alt="Gold"', 'alt="award karma"'),
-                     u["award_karma"],
+                     u["award_karma"], inbox_link(u["unread"]),
                      ' <span class="sep">|</span> <a href="/admin">admin</a>' if u["is_admin"] else "", csrf(req))
     elif settings.flag("open_registration"):
         right = 'want to join? <a href="/login">log in</a> or <a href="/register">sign up</a> in seconds.'
@@ -348,7 +356,7 @@ def page(req, title, body, *, side="", pagename="", pagehref="", tabs=None, stat
     doc = f"""<!doctype html>
 <html lang="en" data-theme="{'dark' if dark else 'light'}"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{e(title)}</title>
+<title>{'(%d) ' % u['unread'] if u and u['unread'] else ''}{e(title)}</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="{static_url('style.css')}">
 <script src="{static_url('app.js')}" defer></script>

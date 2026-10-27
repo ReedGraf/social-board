@@ -67,6 +67,53 @@
     });
   }
 
+  // Notifications: poll the unread count every few seconds (data-poll) while the tab is
+  // visible, and right away when it becomes visible again. An open notifications page
+  // also pulls in the new rows. Without JS, the count is still right on every page load.
+  var inbox = document.getElementById("inbox");
+  if (inbox) {
+    var poll = (+inbox.dataset.poll || 30) * 1000, timer = null, baseTitle = document.title.replace(/^\(\d+\) /, "");
+    var nlist = document.querySelector(".notifications[data-since]");
+    var showCount = function (n) {
+      var b = inbox.querySelector(".count");
+      b.textContent = n;
+      b.hidden = !n;
+      inbox.classList.toggle("has-unread", n > 0);
+      inbox.setAttribute("aria-label", "notifications, " + n + " unread");
+      document.title = (n ? "(" + n + ") " : "") + baseTitle;
+    };
+    var pullRows = function () {
+      fetch("/notifications/new?since=" + nlist.dataset.since, { credentials: "same-origin" })
+        .then(function (r) { return r.ok ? r.text() : ""; })
+        .then(function (html) {
+          var box = document.createElement("div");
+          box.innerHTML = html;
+          var rows = Array.prototype.filter.call(box.children, function (row) { return !document.getElementById(row.id); });
+          if (!rows.length) return;
+          var empty = nlist.querySelector(".empty");
+          if (empty) empty.remove();
+          nlist.dataset.since = Math.max(+nlist.dataset.since, +rows[0].dataset.t); // newest first
+          rows.reverse().forEach(function (row) { row.classList.add("fresh"); nlist.insertBefore(row, nlist.firstChild); });
+          showCount(0); // the server counted them as read
+        });
+    };
+    var check = function () {
+      fetch("/notifications/count", { credentials: "same-origin" })
+        .then(function (r) { return r.json(); })
+        .then(function (j) {
+          if (j.login) { stop(); return; } // logged out elsewhere
+          if (nlist && j.unread) pullRows(); else showCount(j.unread);
+        })
+        .catch(function () {}); // offline for a moment: try again next time
+    };
+    var start = function () { if (!timer) timer = setInterval(check, poll); };
+    var stop = function () { clearInterval(timer); timer = null; };
+    document.addEventListener("visibilitychange", function () {
+      if (document.hidden) stop(); else { check(); start(); }
+    });
+    if (!document.hidden) start();
+  }
+
   // Live front page: new posts arrive over /live (server-sent events).
   var list = document.querySelector(".sitetable[data-live]");
   if (!list) return;

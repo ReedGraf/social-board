@@ -143,6 +143,20 @@ When the front page is sorted by **new** (first page) and you're at the top, new
 
 How it works: creating a post runs PostgreSQL's `pg_notify` inside the same transaction, so the event fires only once the post is saved. Each server process keeps one `LISTEN` connection and passes events to open front pages over server-sent events (`/live`). There's no Redis or other message broker, and several server processes on one database all see every post. The stream only stays open while the tab is visible. When you come back, it catches up on posts from the past hour that you missed.
 
+## Notifications
+
+The header's **notifications** link shows how many unread notifications you have, in orangered. That count updates by itself every 30 seconds while the tab is open, and the tab title shows it too, e.g. "(2) front page". On the **notifications** page, new ones slide in at the top without reloading. Opening the page marks everything as read.
+
+You're notified when:
+- someone **replies to your post**
+- someone **replies to your comment**
+- someone **mentions you** by writing your shown name, e.g. `u/alice`, in a post or comment
+- someone **gives you an award**
+
+Each of these can be switched off under **preferences → notifications**. You're never notified about your own actions. A reply that also mentions you counts as one notification, and one post or comment can mention at most 10 people.
+
+How it works: a notification is saved in the same transaction as the reply or award that caused it, and only if the recipient wants that kind. The unread count is loaded with your session, so it costs nothing extra on a page load. Polling is one small indexed query, `/notifications/count`, and it pauses while the tab is hidden. The interval is `POLL_SECONDS` in `sb/notify.py`. Notifications belong to the board they happened on. Like logins, they aren't included in snapshots. Read notifications older than 90 days are cleared when the server starts.
+
 ## Keyboard and accessibility
 
 - **Ctrl+Enter** (⌘+Enter on Mac) sends whatever form you're typing in: comments, replies, new posts, settings. A plain Enter still makes a new line, and an empty required field shows the browser's usual warning instead of sending.
@@ -254,6 +268,7 @@ sb/db.py          PostgreSQL schema, connection pool, image storage, export + me
 sb/settings.py    platform settings (edited at /admin)
 sb/media.py       image optimization: everything becomes a right-sized, compressed WebP
 sb/god.py         god mode: the admin dashboard for editing any user, plus its audit log
+sb/notify.py      notifications: what triggers them, preferences, polling interval
 sb/awards.py      award types and prices, award karma (earning on upvotes, spending on awards)
 sb/live.py        real-time new-post events (PostgreSQL LISTEN/NOTIFY → server-sent events)
 sb/security.py    scrypt hashing, recovery phrases, rate limiting

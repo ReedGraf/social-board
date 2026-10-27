@@ -104,6 +104,8 @@ def serve(args):
     iid = instance_id(args.data)
     c = db.connect()
     c.execute("DELETE FROM sessions WHERE expires<?", (db.now(),))
+    from sb import notify
+    notify.prune(c)
     c.raw.close()
     os.makedirs(args.ads, exist_ok=True)
     web.CONF.update(instance=iid, avatars_dir=os.path.abspath(args.avatars), ads_dir=os.path.abspath(args.ads),

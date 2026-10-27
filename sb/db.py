@@ -48,13 +48,15 @@ CREATE TABLE IF NOT EXISTS users(
   live_updates  INTEGER NOT NULL DEFAULT 1,  -- preference: new posts appear on the front page live
   dark_mode     INTEGER NOT NULL DEFAULT 1,  -- preference: dark theme (the default)
   award_karma   INTEGER NOT NULL DEFAULT 100 CHECK(award_karma >= 0),  -- spendable on awards; not regular karma
-  karma_adjust  INTEGER NOT NULL DEFAULT 0   -- admin (god mode) adjustment added to vote-based karma
+  karma_adjust  INTEGER NOT NULL DEFAULT 0,  -- admin (god mode) adjustment added to vote-based karma
+  notify_off    TEXT NOT NULL DEFAULT ''     -- preference: notification kinds switched off, comma-separated
 );
 -- columns added after the first release; no-ops on new databases
 ALTER TABLE users ADD COLUMN IF NOT EXISTS live_updates INTEGER NOT NULL DEFAULT 1;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS dark_mode INTEGER NOT NULL DEFAULT 1;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS award_karma INTEGER NOT NULL DEFAULT 100 CHECK(award_karma >= 0);
 ALTER TABLE users ADD COLUMN IF NOT EXISTS karma_adjust INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS notify_off TEXT NOT NULL DEFAULT '';
 
 -- Every god-mode action, newest last. Names (not ids) so entries survive renames and deletions.
 CREATE TABLE IF NOT EXISTS admin_log(
@@ -141,6 +143,22 @@ CREATE TABLE IF NOT EXISTS upvote_payouts(
   PRIMARY KEY(voter_id, target_id)
 );
 
+-- Notifications (sb/notify.py). Local to this board like sessions, so not in snapshots.
+-- target_id is the comment or post that caused it; detail is the award, for awards.
+CREATE TABLE IF NOT EXISTS notifications(
+  id        TEXT PRIMARY KEY,
+  user_id   TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  kind      TEXT NOT NULL,
+  actor_id  TEXT REFERENCES users(id) ON DELETE SET NULL,
+  target_id TEXT NOT NULL,
+  post_id   TEXT NOT NULL REFERENCES posts(id),
+  detail    TEXT NOT NULL DEFAULT '',
+  read      INTEGER NOT NULL DEFAULT 0,
+  created   BIGINT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS notifications_user ON notifications(user_id, created DESC);
+CREATE INDEX IF NOT EXISTS notifications_unread ON notifications(user_id) WHERE read=0;
+
 -- Sessions are bound to the instance that issued them, so two boards sharing
 -- one hostname (different ports) never accept each other's cookies.
 CREATE TABLE IF NOT EXISTS sessions(
@@ -162,7 +180,7 @@ CREATE TABLE users(id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE
   pw_hash TEXT NOT NULL, recovery_hash TEXT NOT NULL, avatar_id TEXT, bio TEXT NOT NULL,
   is_admin INTEGER NOT NULL, created INTEGER NOT NULL, banned INTEGER NOT NULL DEFAULT 0,
   live_updates INTEGER NOT NULL DEFAULT 1, dark_mode INTEGER NOT NULL DEFAULT 1, award_karma INTEGER NOT NULL DEFAULT 100,
-  karma_adjust INTEGER NOT NULL DEFAULT 0);
+  karma_adjust INTEGER NOT NULL DEFAULT 0, notify_off TEXT NOT NULL DEFAULT '');
 CREATE TABLE communities(id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE, prefix TEXT NOT NULL,
   title TEXT NOT NULL, description TEXT NOT NULL, owner_id TEXT, created INTEGER NOT NULL,
   color TEXT NOT NULL DEFAULT '');
@@ -394,13 +412,14 @@ def merge(src_path):
             if name != r["name"]:
                 stats["renamed"].append((r["name"], name))
             c.execute("INSERT INTO users(id, name, prefix, pw_hash, recovery_hash, avatar_id, bio, is_admin, created,"
-                      " banned, live_updates, dark_mode, award_karma, karma_adjust) VALUES(?,?,?,?,?,?,?,0,?,?,?,?,?,?)",
+                      " banned, live_updates, dark_mode, award_karma, karma_adjust, notify_off) VALUES(?,?,?,?,?,?,?,0,?,?,?,?,?,?,?)",
                       (r["id"], name, r["prefix"], r["pw_hash"], r["recovery_hash"], img.get(r["avatar_id"]),
                        r["bio"], r["created"], r["banned"] if "banned" in user_cols else 0,
                        r["live_updates"] if "live_updates" in user_cols else 1,
                        r["dark_mode"] if "dark_mode" in user_cols else 1,
                        r["award_karma"] if "award_karma" in user_cols else 100,
-                       r["karma_adjust"] if "karma_adjust" in user_cols else 0))
+                       r["karma_adjust"] if "karma_adjust" in user_cols else 0,
+                       r["notify_off"] if "notify_off" in user_cols else ""))
             stats["users"] += 1
 
         comms = {}

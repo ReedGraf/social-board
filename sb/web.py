@@ -143,7 +143,8 @@ def load_session(req):
     if not morsel:
         return
     row = db.conn().execute(
-        "SELECT s.token_hash, s.csrf, u.* FROM sessions s JOIN users u ON u.id=s.user_id "
+        "SELECT s.token_hash, s.csrf, u.*, (SELECT count(*) FROM notifications n WHERE n.user_id=u.id AND n.read=0) AS unread "
+        "FROM sessions s JOIN users u ON u.id=s.user_id "
         "WHERE s.token_hash=? AND s.instance=? AND s.expires>? AND u.banned=0",
         (token_hash(morsel.value), CONF["instance"], db.now())).fetchone()
     if row:

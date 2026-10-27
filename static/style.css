@@ -288,7 +288,6 @@ main:focus { outline: none; }
 .award { margin-right: 4px; color: #888; font-size: 10px; }
 .awardicon { vertical-align: -3px; }
 .award .awardicon { margin-right: 1px; }
-.giveaward { color: #c8901e !important; }
 .awardbal { margin-left: 4px; white-space: nowrap; }
 .awardbal .awardicon { margin-right: 2px; vertical-align: -1px; }
 .awardtarget { max-width: 560px; margin-bottom: 10px; }
@@ -307,7 +306,6 @@ main:focus { outline: none; }
 .trophies h3 { font-size: 12px; margin-bottom: 4px; }
 .trophy { display: inline-flex; align-items: center; gap: 4px; margin: 0 8px 4px 0; font-size: 11px; }
 .trophy b { color: #888; font-weight: normal; }
-[data-theme=dark] .giveaward { color: #f0b94a !important; }
 [data-theme=dark] .awardopt { background: #232c35; border-color: #34414e; }
 [data-theme=dark] .awardopt .acost { color: #9a9ea0; }
 [data-theme=dark] .awardtarget blockquote { border-left-color: #5a5a5c; }
@@ -382,3 +380,21 @@ main:focus { outline: none; }
 [data-theme=dark] .godstats th { color: #9a9ea0; }
 [data-theme=dark] .godlog th, [data-theme=dark] .godlog td { border-color: #3a3a3c; }
 [data-theme=dark] .godlog th { background: #232324; }
+
+/* notifications: header count (orangered, like old reddit's mail) and the list */
+#header-right .inbox .count { display: inline-block; min-width: 14px; margin-left: 3px; padding: 0 4px; border-radius: 7px;
+  background: #ff4500; color: #fff; font-size: 10px; line-height: 14px; text-align: center; }
+#header-right .inbox .count[hidden] { display: none; }
+#header-right .inbox.has-unread { color: #ff4500; font-weight: bold; }
+.notifications { max-width: 760px; }
+.notification { padding: 6px 8px; margin-bottom: 6px; border: 1px solid #e3e3e3; border-left: 3px solid #e3e3e3; }
+.notification.unread { border-left-color: #ff4500; background: #fff8f4; }
+.notification.fresh { animation: fresh 3s ease-out; }
+.notification .ntitle { font-size: 12px; }
+.notification .ntitle time { color: #888; font-size: 10px; margin-left: 4px; }
+.notification .nbody { margin: 4px 0 2px; font-size: 13px; overflow-wrap: anywhere; white-space: pre-line; }
+.notification .nbody p { margin: 0; }
+[data-theme=dark] .notification { border-color: #343536; }
+[data-theme=dark] .notification.unread { border-left-color: #ff6a33; background: #2a2220; }
+[data-theme=dark] .notification.fresh { animation-name: fresh-dark; }
+[data-theme=dark] #header-right .inbox.has-unread { color: #ff7a45; }
