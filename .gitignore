@@ -1,0 +1,11 @@
+data/
+__pycache__/
+.venv/
+*.db
+*.db-wal
+*.db-shm
+
+# Site content, not code: the ad images/videos and their click-through links.
+# The empty folder stays so a fresh clone runs.
+ads/*
+!ads/.gitkeep
