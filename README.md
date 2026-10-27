@@ -20,6 +20,51 @@ It stores everything in **PostgreSQL**. There's no Redis or other cache server; 
    ```
    Instead of exporting `BOARD_DB` every time, you can put the URL in `data/database_url`, a one-line file; keep it `chmod 600` since it holds the password. Without any of these, the board uses `postgresql:///social_board`: a database called `social_board`, reached through the local Unix socket as your OS user.
 
+## Deploying on an Ubuntu 24.04 server
+
+`install.sh` turns a fresh Ubuntu 24.04 server into a running board. It installs the packages, creates a `socialboard` system user, sets up PostgreSQL, applies your settings, creates the first admin, and installs a systemd service that starts at boot. It can also set up HTTPS and firewall rules.
+
+```sh
+git clone https://github.com/ReedGraf/social-board.git && cd social-board
+sudo ./install.sh                                  # asks about everything, with defaults
+sudo ./install.sh --config board.conf              # answers from a preset; asks only what's missing
+sudo ./install.sh --config board.conf --yes        # fully unattended (missing answers = defaults)
+sudo ./install.sh --dry-run                        # shows the summary and steps, changes nothing
+```
+
+The script also works on its own, outside a clone: it then fetches the code from GitHub. Every preset key is documented in [`install/example.conf`](install/example.conf). Preset files are read as text and never executed; unknown keys are an error, so typos are caught.
+
+**Choices it walks through:**
+- **Database:** Ubuntu's PostgreSQL package (recommended), PostgreSQL 17 in **podman** (run by systemd via Quadlet) or **docker**, or an **existing** PostgreSQL server given by URL.
+- **HTTPS:** give a domain name pointing at the server, and Caddy (Ubuntu's package) serves the board over HTTPS with an automatic Let's Encrypt certificate. The board then only listens on 127.0.0.1, sees visitors' real addresses for rate limiting, and marks login cookies `Secure`. Local names (`.internal`, `.home.arpa`, `.lan`, `.local`, `.test`, `localhost`) get Caddy's own local certificate instead.
+- **Network:** port, and whole network vs. this server only. Optional `ufw` rules; the installer never turns ufw on itself, so it can't lock you out of SSH.
+- **The board:** site name, user and community prefixes, whether people may pick their own prefixes, open sign-ups, and who can create communities.
+- **The first admin:** username and password (or a generated one). Its recovery phrase is shown at the end.
+- **Importing:** optionally load a snapshot from another board (`board.py export`), e.g. to move this board onto the server.
+
+**Where things live:**
+
+| | |
+|---|---|
+| `/opt/social-board` | the code (owned by root, read-only to the board) |
+| `/var/lib/social-board/data` | `database_url` (mode 600) and the instance identity |
+| `/var/lib/social-board/ads`, `…/avatars` | ad files and default avatars (the admin image manager writes here) |
+| `/var/lib/social-board/install.conf` | your answers, minus passwords |
+
+**Re-running** updates the code and Python packages, re-applies the settings and restarts the service. It never re-creates the database, never changes an existing admin's password, and never touches posts. A plain interactive re-run offers your previous answers as the defaults, so pressing Enter all the way through changes nothing. To update unattended: `sudo /opt/social-board/install.sh --config /var/lib/social-board/install.conf --yes`.
+
+**If something fails,** it stops, names the step, and shows the relevant log. Fix the cause and run the same command again. A database URL is only saved after a successful test connection, so a typo can't break a running board.
+
+**Day to day:** logs with `journalctl -u social-board -f`, restart with `sudo systemctl restart social-board`. Back up with `board.py export` (the installer prints the exact command).
+
+Two command-line tools the installer uses are handy on their own:
+
+```sh
+board.py settings show                                    # every platform setting
+board.py settings set user_prefix=blu open_registration=no   # same rules as the /admin page
+board.py create-user alice --admin --password-stdin       # prints the new account's recovery phrase
+```
+
 ## Accounts
 
 - You sign up with only a username and a password. No email is needed.

@@ -76,6 +76,10 @@ class Request:
         except cookies.CookieError:
             pass
         self.ip = h.client_address[0]
+        if CONF.get("trust_proxy"):
+            # Behind Caddy (on this machine), the visitor's address is the last X-Forwarded-For entry.
+            fwd = h.headers.get("X-Forwarded-For", "").split(",")[-1].strip()
+            self.ip = fwd or self.ip
         self.user = self.session = None
         self.set_cookies = []
 
@@ -152,8 +156,8 @@ def start_session(req, user_id):
     db.conn().execute("INSERT INTO sessions VALUES(?,?,?,?,?)",
                       (token_hash(token), user_id, CONF["instance"], new_token(),
                        db.now() + SESSION_DAYS * 86400))
-    req.set_cookies.append("%s=%s; Path=/; Max-Age=%d; HttpOnly; SameSite=Lax"
-                           % (cookie_name(), token, SESSION_DAYS * 86400))
+    req.set_cookies.append("%s=%s; Path=/; Max-Age=%d; HttpOnly; SameSite=Lax%s"
+                           % (cookie_name(), token, SESSION_DAYS * 86400, secure_flag()))
     req.cookies[cookie_name()] = token
     load_session(req)  # so the rest of this response renders as logged in
 
@@ -161,7 +165,12 @@ def start_session(req, user_id):
 def end_session(req):
     if req.session:
         db.conn().execute("DELETE FROM sessions WHERE token_hash=?", (req.session,))
-    req.set_cookies.append("%s=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax" % cookie_name())
+    req.set_cookies.append("%s=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax%s" % (cookie_name(), secure_flag()))
+
+
+def secure_flag():
+    # Served over HTTPS (behind Caddy): never send the login cookie over plain HTTP.
+    return "; Secure" if CONF.get("secure_cookies") else ""
 
 
 def check_csrf(req):

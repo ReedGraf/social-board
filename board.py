@@ -6,6 +6,8 @@
   python3 board.py [--db URL] merge OTHER.db    load a snapshot (or an old SQLite board.db) into this board
   python3 board.py [--db URL] admin USERNAME    toggle admin rights
   python3 board.py [--db URL] ban USERNAME      toggle a ban
+  python3 board.py [--db URL] settings show | set KEY=VALUE ...   platform settings (same rules as /admin)
+  python3 board.py [--db URL] create-user NAME [--admin] [--password-stdin]   prints the recovery phrase
 
 The database URL comes from --db, else $BOARD_DB, else the file data/database_url,
 else postgresql:///social_board.
@@ -104,7 +106,8 @@ def serve(args):
     c.execute("DELETE FROM sessions WHERE expires<?", (db.now(),))
     c.raw.close()
     os.makedirs(args.ads, exist_ok=True)
-    web.CONF.update(instance=iid, avatars_dir=os.path.abspath(args.avatars), ads_dir=os.path.abspath(args.ads))
+    web.CONF.update(instance=iid, avatars_dir=os.path.abspath(args.avatars), ads_dir=os.path.abspath(args.ads),
+                    trust_proxy=args.trust_proxy, secure_cookies=args.secure_cookies)
     from sb import settings
     if args.name:  # --name only sets the default; an admin's choice in /admin wins
         settings.DEFAULTS["site_name"] = args.name
@@ -138,6 +141,54 @@ def serve(args):
         pass
 
 
+BOOL_SETTINGS = ("custom_user_prefix", "custom_community_prefix", "open_registration")
+
+
+def settings_cmd(args):
+    from sb import settings, views  # noqa: F401 - views provides the validation
+    current = settings.all()
+    if args.action == "show":
+        for k in sorted(current):
+            print("%s=%s" % (k, current[k]))
+        return
+    new = dict(current)
+    for pair in args.pairs:
+        key, sep, value = pair.partition("=")
+        key = key.strip().lower()
+        if not sep or key not in settings.DEFAULTS:
+            sys.exit("unknown setting %r (known: %s)" % (key, ", ".join(sorted(settings.DEFAULTS))))
+        if key in BOOL_SETTINGS:  # accept yes/no/true/false/on/off/1/0
+            value = {"yes": "1", "true": "1", "on": "1", "1": "1", "no": "0", "false": "0", "off": "0", "0": "0"}.get(value.lower(), value)
+        new[key] = value.strip()
+    err = views.check_settings(new)
+    if err:
+        sys.exit("not saved: " + err)
+    settings.save({k: v for k, v in new.items() if v != current[k]})
+    changed = sorted(k for k in new if new[k] != current[k])
+    print("settings saved%s" % (": " + ", ".join(changed) if changed else " (no changes)"))
+
+
+def create_user_cmd(args):
+    from sb import views
+    web.CONF["avatars_dir"] = os.path.abspath(args.avatars)
+    if args.password_stdin:
+        password = sys.stdin.readline().rstrip("\n")
+    else:
+        import getpass
+        password = getpass.getpass("password for %s: " % args.username)
+        if getpass.getpass("again: ") != password:
+            sys.exit("passwords don't match")
+    if db.conn().execute("SELECT 1 FROM users WHERE name=?", (args.username,)).fetchone():
+        print("user %s already exists" % args.username, file=sys.stderr)
+        sys.exit(3)  # distinct code so scripts can tell "exists" from a real failure
+    try:
+        phrase = views.create_account(args.username, password, args.prefix, args.admin)
+    except ValueError as ex:
+        sys.exit("not created: %s" % ex)
+    print("created %s%s" % (args.username, " (admin)" if args.admin else ""))
+    print("recovery phrase: %s" % phrase)
+
+
 def main():
     ap = argparse.ArgumentParser(description="social board")
     ap.add_argument("--db", help="PostgreSQL URL (default: $BOARD_DB, data/database_url, or %s)" % DEFAULT_DB)
@@ -151,14 +202,28 @@ def main():
     s.add_argument("--ads", default=os.path.join(HERE, "ads"),
                    help="folder of advertisement images (default ./ads; admins can manage it at /admin)")
     s.add_argument("--name", help="default site name (admins can change it at /admin)")
+    s.add_argument("--trust-proxy", action="store_true",
+                   help="behind a reverse proxy on this machine (Caddy): take visitors' addresses from X-Forwarded-For")
+    s.add_argument("--secure-cookies", action="store_true", help="served over HTTPS: mark login cookies Secure")
     e = sub.add_parser("export", help="write a portable copy of the database")
     e.add_argument("out")
     m = sub.add_parser("merge", help="merge another board's database into this one")
     m.add_argument("other")
-    a = sub.add_parser("admin", help="toggle admin for a user")
+    a = sub.add_parser("admin", help="toggle admin for a user (or force it with --on / --off)")
     a.add_argument("username")
+    a.add_argument("--on", dest="force", action="store_const", const=1)
+    a.add_argument("--off", dest="force", action="store_const", const=0)
     b = sub.add_parser("ban", help="toggle a ban for a user")
     b.add_argument("username")
+    st = sub.add_parser("settings", help="show or change platform settings (validated like /admin)")
+    st.add_argument("action", choices=("show", "set"))
+    st.add_argument("pairs", nargs="*", metavar="KEY=VALUE")
+    cu = sub.add_parser("create-user", help="create an account and print its recovery phrase")
+    cu.add_argument("username")
+    cu.add_argument("--admin", action="store_true")
+    cu.add_argument("--prefix")
+    cu.add_argument("--password-stdin", action="store_true", help="read the password from standard input (else: ask)")
+    cu.add_argument("--avatars", default=os.path.join(HERE, "avatars"), help="folder of default avatar images")
     args = ap.parse_args()
 
     args.db = args.db or os.environ.get("BOARD_DB") or read_db_file(args.data) or DEFAULT_DB
@@ -186,10 +251,15 @@ def main():
               "%(comments)d comments, %(votes)d votes, %(images)d images" % st)
         for old, new in st["renamed"]:
             print("  username clash: %s was renamed to %s" % (old, new))
+    elif args.cmd == "settings":
+        return settings_cmd(args)
+    elif args.cmd == "create-user":
+        return create_user_cmd(args)
     else:
         col = "is_admin" if args.cmd == "admin" else "banned"
+        value = "1-%s" % col if getattr(args, "force", None) is None else str(args.force)
         c = db.connect()
-        r = c.execute("UPDATE users SET %s=1-%s WHERE name=? RETURNING name, %s" % (col, col, col),
+        r = c.execute("UPDATE users SET %s=%s WHERE name=? RETURNING name, %s" % (col, value, col),
                       (args.username,)).fetchone()
         if not r:
             sys.exit("no such user")

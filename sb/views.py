@@ -1061,6 +1061,25 @@ def register_post(req):
     return phrase_page(req, req.user, phrase, "welcome, %s!" % name)
 
 
+def create_account(name, password, prefix=None, admin=False):
+    """Create an account; returns its recovery phrase. Raises ValueError with a reason if it can't."""
+    prefix = prefix or settings.get("user_prefix")
+    err = check_password(password, password) or valid_prefix(prefix, "user")
+    if not USER_RX.fullmatch(name):
+        err = "Username must be 3-20 letters, numbers, - or _."
+    elif conn().execute("SELECT 1 FROM users WHERE name=?", (name,)).fetchone():
+        err = "That username is taken."
+    err = err or address_clash(name, user_prefix=prefix)
+    if err:
+        raise ValueError(err)
+    phrase = security.new_phrase()
+    pw_hash, rec_hash = security.hash_secret(password), security.hash_secret(phrase)
+    with tx() as cx:
+        cx.execute("INSERT INTO users(id, name, prefix, pw_hash, recovery_hash, avatar_id, is_admin, created) "
+                   "VALUES(?,?,?,?,?,?,?,?)", (new_id(), name, prefix, pw_hash, rec_hash, default_avatar(cx), int(admin), now()))
+    return phrase
+
+
 def login_form(req, err="", f=None):
     f = f or {}
     nxt = f.get("next", req.query.get("next", "/"))
@@ -1361,8 +1380,27 @@ def admin_save(req):
     f = {k: req.get(k).strip() for k in ("site_name", "tagline", "user_prefix", "community_prefix", "community_creation")}
     for k in ("custom_user_prefix", "custom_community_prefix", "open_registration"):
         f[k] = "1" if req.get(k) == "1" else "0"
+    err = check_settings(f)
+    if err:
+        return admin_page(req, err, f)
+    up, cp = f["user_prefix"], f["community_prefix"]
+    old_up, old_cp = settings.get("user_prefix"), settings.get("community_prefix")
+    settings.save(f)
+    if req.get("apply_user_prefix") == "1" and up != old_up:
+        conn().execute("UPDATE users SET prefix=? WHERE prefix=?", (up, old_up))
+    if req.get("apply_community_prefix") == "1" and cp != old_cp:
+        conn().execute("UPDATE communities SET prefix=? WHERE prefix=?", (cp, old_cp))
+    return redirect("/admin?msg=saved")
+
+
+def check_settings(f):
+    """Why the platform settings `f` (a complete dict) can't be saved, or "" if they can.
+    Shared by the admin page and `board.py settings set`."""
     up, cp = f["user_prefix"], f["community_prefix"]
     err = ""
+    for k in ("custom_user_prefix", "custom_community_prefix", "open_registration"):
+        if f[k] not in ("0", "1"):
+            return "%s must be on or off." % k
     if not 1 <= len(f["site_name"]) <= 40:
         err = "Site name must be 1-40 characters."
     elif len(f["tagline"]) > 500:
@@ -1385,15 +1423,7 @@ def admin_save(req):
             err = address_clash(r["name"], r["up"], r["cp"], conf=f)
             if err:
                 break
-    if err:
-        return admin_page(req, err, f)
-    old_up, old_cp = settings.get("user_prefix"), settings.get("community_prefix")
-    settings.save(f)
-    if req.get("apply_user_prefix") == "1" and up != old_up:
-        conn().execute("UPDATE users SET prefix=? WHERE prefix=?", (up, old_up))
-    if req.get("apply_community_prefix") == "1" and cp != old_cp:
-        conn().execute("UPDATE communities SET prefix=? WHERE prefix=?", (cp, old_cp))
-    return redirect("/admin?msg=saved")
+    return err
 
 
 def ad_link_form(req, name, url):
