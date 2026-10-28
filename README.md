@@ -1,7 +1,7 @@
 > [!NOTE]  
 > This was **entirely made with Claude Code** for a [UWEC Cybersecurity Club](https://blugold.group/) meeting on DDoSing where we used this as a target service.
 > [Jack Hagen](https://github.com/ThisIsNotANamepng/) offhandedly suggested that we could create a reddit clone and I really liked the idea of an old reddit clone so, in a time crunch I asked Claude to do it.
-> Over the course of a day and a half I propted the crap out of Claude making this and eventually it turned into something actually kind of cool and I though I'd put it up here.
+> Over the course of a day and a half I prompted the crap out of Claude making this and eventually it turned into something actually kind of cool and I though I'd put it up here.
 
 # social board
 
